@@ -40,23 +40,24 @@ sealed class MainForm : Form
 
     public MainForm()
     {
-        settle.Tick += (_, _) => { settle.Stop(); Update(ForegroundLayout()); };
-        Size = new Size(220, 80);
-        FormBorderStyle = FormBorderStyle.FixedToolWindow;
-        ShowInTaskbar = true; // FixedToolWindow hides it by default; force it via CreateParams
+        var link = new LinkLabel
+        {
+            Text = "whichswitch",
+            Font = SystemFonts.MessageBoxFont!, // the standard Windows UI font (same as dialogs)
+            AutoSize = true,
+            Location = new Point(12, 12),
+        };
+        link.LinkClicked += (_, _) => System.Diagnostics.Process.Start(
+            new System.Diagnostics.ProcessStartInfo("https://github.com/truedrcb/whichswitch") { UseShellExecute = true });
+        Controls.Add(link);
+
+        settle.Tick +=(_, _) => { settle.Stop(); Update(ForegroundLayout()); };
+        ClientSize = new Size(300, 100);
+        MinimumSize = new Size(260, 100); // keeps the title bar buttons visible with room to drag
+        // A normal resizable window with a minimize button (room for future controls).
+        MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
         TopMost = true;
-    }
-
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            var cp = base.CreateParams;
-            cp.ExStyle |= 0x00040000;  // WS_EX_APPWINDOW: always show on taskbar
-            cp.ExStyle &= ~0x00000080; // clear WS_EX_TOOLWINDOW
-            return cp;
-        }
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -76,7 +77,8 @@ sealed class MainForm : Form
     {
         if (m.Msg == shellMsg)
         {
-            int code = m.WParam.ToInt32();            if (code == Native.HSHELL_LANGUAGE || code == Native.HSHELL_UNDOC_LANG)
+            int code = m.WParam.ToInt32();
+            if (code == Native.HSHELL_LANGUAGE || code == Native.HSHELL_UNDOC_LANG)
             {
                 // The foreground thread switches its layout slightly AFTER this message,
                 // so re-read once after a short delay (one-shot timer, not polling).
@@ -86,6 +88,9 @@ sealed class MainForm : Form
                 Update(ForegroundLayout());
         }
         base.WndProc(ref m);
+        // Let the form's own client area (not child controls) act as a title bar: drag by content.
+        if (m.Msg == 0x0084 /* WM_NCHITTEST */ && m.Result == (IntPtr)1 /* HTCLIENT */)
+            m.Result = (IntPtr)2; // HTCAPTION
     }
 
     static IntPtr ForegroundLayout()
