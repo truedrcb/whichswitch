@@ -1,0 +1,13 @@
+RegisterShellHookWindow
+DeregisterShellHookWindow
+RegisterWindowMessage
+GetForegroundWindow
+GetWindowThreadProcessId
+GetKeyboardLayout
+DestroyIcon
+WM_NCHITTEST
+HTCLIENT
+HTCAPTION
+HSHELL_WINDOWACTIVATED
+HSHELL_LANGUAGE
+HSHELL_HIGHBIT

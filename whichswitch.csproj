@@ -5,8 +5,21 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>whichswitch</AssemblyName>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks> <!-- required by the code CsWin32 generates -->
   </PropertyGroup>
+
+  <!-- Icon background colors, compiled into the exe. Add one line per language code shown in the title. -->
+  <ItemGroup>
+    <AssemblyMetadata Include="IconColor.Default" Value="#285AC8" />
+    <AssemblyMetadata Include="IconColor.RU" Value="#C82828" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.367">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
 
 </Project>

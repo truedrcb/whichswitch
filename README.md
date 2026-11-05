@@ -2,7 +2,7 @@
 
 A keyboard indicator, because Windows doesn't show the keyboard layout on all screens.
 
-whichswitch is a tiny Windows utility that shows the current keyboard layout
+whichswitch is a small Windows utility that shows the current keyboard layout
 (e.g. `EN`, `RU`, `DE`) in the title and icon of its own taskbar button. If you
 enable "Show my taskbar on all displays", the indicator is visible on every
 monitor.
@@ -31,9 +31,9 @@ cd whichswitch
 dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
 ```
 
-The result is a single executable at
-`bin\Release\net8.0-windows\win-x64\publish\whichswitch.exe`. It needs no
-installer and no .NET runtime, so you can copy it anywhere.
+The result is `bin\Release\net8.0-windows\win-x64\publish\whichswitch.exe`, about
+150 MB because it includes the .NET runtime. It needs no installer and no installed
+.NET runtime. Copy just this file anywhere: the DLLs next to it aren't needed.
 
 ## Run
 
@@ -43,7 +43,7 @@ Double-click `whichswitch.exe`, or during development run it from the repository
 dotnet run
 ```
 
-A small window appears and its taskbar button shows the current layout code.
+A small always-on-top window appears and its taskbar button shows the current layout code.
 Switch layouts as usual (Alt+Shift, Win+Space, ...) and the title and icon
 update. Close the window to quit.
 
@@ -58,6 +58,19 @@ update. Close the window to quit.
 Press `Win+R`, run `shell:startup`, and put a shortcut to `whichswitch.exe` in
 the folder that opens.
 
+## Configure icon colors
+
+Icon background colors are set at build time in
+[whichswitch.csproj](whichswitch.csproj). Add one line per language code, then rebuild:
+
+```xml
+<AssemblyMetadata Include="IconColor.Default" Value="#285AC8" />
+<AssemblyMetadata Include="IconColor.RU" Value="#C82828" />
+<AssemblyMetadata Include="IconColor.DE" Value="#2E8B57" />
+```
+
+Languages without their own line use `IconColor.Default`.
+
 ## Known limitations
 
 - Tested only on Windows 11 with three layouts. The icon of a minimized window
@@ -70,4 +83,9 @@ the folder that opens.
 dotnet build
 ```
 
-The whole tool is a single file, [Program.cs](Program.cs).
+All the code is in one file, [Program.cs](Program.cs). The Windows API declarations
+and constants it uses are listed in [NativeMethods.txt](NativeMethods.txt) and
+generated at build time by Microsoft's
+[CsWin32](https://github.com/microsoft/CsWin32) from the official Windows metadata.
+The package is used only during the build, so the first build needs network access
+to download it, while the tool itself never uses the network.

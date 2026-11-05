@@ -1,140 +1,216 @@
+using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Text;
 using System.Globalization;
-using System.Runtime.InteropServices;
+using System.Reflection;
 using System.Windows.Forms;
+using Windows.Win32.Foundation;
+using Windows.Win32.UI.Input.KeyboardAndMouse;
+using Windows.Win32.UI.WindowsAndMessaging;
+using static Windows.Win32.PInvoke; // Windows API, generated from NativeMethods.txt by CsWin32
 
-// whichswitch: shows the current keyboard layout (RU/EN) in the title and icon
+// whichswitch: shows the current keyboard layout (e.g. EN, RU) in the title and icon
 // of a taskbar window. Event-driven only: shell hook, no polling, no key hooks.
-
-static class Native
-{
-    [DllImport("user32.dll")] public static extern bool RegisterShellHookWindow(IntPtr hwnd);
-    [DllImport("user32.dll")] public static extern bool DeregisterShellHookWindow(IntPtr hwnd);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern uint RegisterWindowMessage(string name);
-    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, IntPtr pid);
-    [DllImport("user32.dll")] public static extern IntPtr GetKeyboardLayout(uint threadId);
-    [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr hIcon);
-    [DllImport("user32.dll")] public static extern bool GetGUIThreadInfo(uint threadId, ref GUITHREADINFO info);
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct GUITHREADINFO
-    {
-        public int cbSize, flags;
-        public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret;
-        public int left, top, right, bottom;
-    }
-
-    public const int HSHELL_WINDOWACTIVATED = 4;
-    public const int HSHELL_LANGUAGE = 8;       // was wrongly 0x19
-    public const int HSHELL_UNDOC_LANG = 0x38;  // observed on Win11 when the layout switches
-    public const int HSHELL_RUDEFAULT = 0x8004; // RUDE flag | WINDOWACTIVATED (fullscreen/rude app)
-}
 
 sealed class MainForm : Form
 {
-    readonly uint shellMsg = Native.RegisterWindowMessage("SHELLHOOK");
-    string current = "";
-    readonly System.Windows.Forms.Timer settle = new() { Interval = 400 };
+    // The foreground thread switches its layout after the shell message arrives;
+    // 80 ms proved too short on Windows 11.
+    const int LayoutSettleDelayMs = 400;
+
+    readonly uint shellHookMessage = RegisterWindowMessage("SHELLHOOK");
+    readonly Timer layoutSettleTimer = new() { Interval = LayoutSettleDelayMs };
+    string shownLayoutCode = "";
+    Icon? layoutIcon;
 
     public MainForm()
     {
-        var link = new LinkLabel
+        Controls.Add(CreateRepositoryLink());
+        layoutSettleTimer.Tick += (_, _) =>
         {
-            Text = "whichswitch",
-            Font = SystemFonts.MessageBoxFont!, // the standard Windows UI font (same as dialogs)
-            AutoSize = true,
-            Location = new Point(12, 12),
+            layoutSettleTimer.Stop();
+            ShowForegroundLayout();
         };
-        link.LinkClicked += (_, _) => System.Diagnostics.Process.Start(
-            new System.Diagnostics.ProcessStartInfo("https://github.com/truedrcb/whichswitch") { UseShellExecute = true });
-        Controls.Add(link);
 
-        settle.Tick +=(_, _) => { settle.Stop(); Update(ForegroundLayout()); };
+        // A normal resizable window with a minimize button (room for future controls).
         ClientSize = new Size(300, 100);
         MinimumSize = new Size(260, 100); // keeps the title bar buttons visible with room to drag
-        // A normal resizable window with a minimize button (room for future controls).
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
         TopMost = true;
     }
 
+    static LinkLabel CreateRepositoryLink()
+    {
+        const string RepositoryUrl = "https://github.com/truedrcb/whichswitch";
+        const int MarginPx = 12;
+
+        var link = new LinkLabel
+        {
+            Text = "whichswitch",
+            Font = SystemFonts.MessageBoxFont, // the standard Windows UI font (same as dialogs)
+            AutoSize = true,
+            Location = new Point(MarginPx, MarginPx),
+        };
+        link.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(RepositoryUrl) { UseShellExecute = true });
+        return link;
+    }
+
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        Native.RegisterShellHookWindow(Handle);
-        Update(Native.GetKeyboardLayout(0));
+
+        // Without the shell hook the indicator would silently go stale, so fail loudly.
+        if (!RegisterShellHookWindow((HWND)Handle))
+            throw new InvalidOperationException("Could not register for shell events (RegisterShellHookWindow failed).");
+
+        ShowForegroundLayout();
     }
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
-        Native.DeregisterShellHookWindow(Handle);
+        DeregisterShellHookWindow((HWND)Handle);
         base.OnHandleDestroyed(e);
     }
 
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == shellMsg)
-        {
-            int code = m.WParam.ToInt32();
-            if (code == Native.HSHELL_LANGUAGE || code == Native.HSHELL_UNDOC_LANG)
-            {
-                // The foreground thread switches its layout slightly AFTER this message,
-                // so re-read once after a short delay (one-shot timer, not polling).
-                settle.Stop(); settle.Start();
-            }
-            else if (code == Native.HSHELL_WINDOWACTIVATED || code == Native.HSHELL_RUDEFAULT)
-                Update(ForegroundLayout());
-        }
+        if (m.Msg == shellHookMessage)
+            HandleShellEvent((uint)m.WParam);
+
         base.WndProc(ref m);
-        // Let the form's own client area (not child controls) act as a title bar: drag by content.
-        if (m.Msg == 0x0084 /* WM_NCHITTEST */ && m.Result == (IntPtr)1 /* HTCLIENT */)
-            m.Result = (IntPtr)2; // HTCAPTION
+
+        // Treat the form's own client area (not child controls) as a title bar: drag by content.
+        if (m.Msg == WM_NCHITTEST && m.Result == (nint)HTCLIENT)
+            m.Result = (nint)HTCAPTION;
     }
 
-    static IntPtr ForegroundLayout()
+    void HandleShellEvent(uint shellEvent)
     {
-        var fg = Native.GetForegroundWindow();
-        var thread = Native.GetWindowThreadProcessId(fg, IntPtr.Zero);
-        // Prefer the thread that owns the focused control (differs from the top-level
-        // window's thread in some apps, e.g. console hosts).
-        var gi = new Native.GUITHREADINFO { cbSize = Marshal.SizeOf<Native.GUITHREADINFO>() };
-        if (Native.GetGUIThreadInfo(thread, ref gi) && gi.hwndFocus != IntPtr.Zero)
-            thread = Native.GetWindowThreadProcessId(gi.hwndFocus, IntPtr.Zero);
-        return Native.GetKeyboardLayout(thread);
-    }
+        // These two are absent from the Windows metadata, so they are defined by hand.
+        const uint HSHELL_UNDOC_LANGUAGE = 0x38; // no official source; observed on Win11 when the layout switches
+        const uint HSHELL_RUDEAPPACTIVATED = HSHELL_WINDOWACTIVATED | HSHELL_HIGHBIT;
 
-    void Update(IntPtr hkl)
-    {
-        if (hkl == IntPtr.Zero) return;
-        var langId = (int)((long)hkl & 0xFFFF);
-        string code;
-        try { code = new CultureInfo(langId).TwoLetterISOLanguageName.ToUpperInvariant(); }
-        catch (CultureNotFoundException) { code = "??"; }
-
-        if (code == current) return;
-        current = code;
-        Text = code;
-        SetIcon(code);
-    }
-
-    void SetIcon(string code)
-    {
-        using var bmp = new Bitmap(32, 32);
-        using (var g = Graphics.FromImage(bmp))
-        using (var font = new Font("Segoe UI", 15, FontStyle.Bold, GraphicsUnit.Pixel))
-        using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+        switch (shellEvent)
         {
-            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-            g.Clear(code == "RU" ? Color.FromArgb(200, 40, 40) : Color.FromArgb(40, 90, 200));
-            g.DrawString(code, font, Brushes.White, new RectangleF(0, 0, 32, 32), sf);
+            case HSHELL_LANGUAGE:
+            case HSHELL_UNDOC_LANGUAGE:
+                ShowForegroundLayoutAfterSettleDelay();
+                break;
+            case HSHELL_WINDOWACTIVATED:
+            case HSHELL_RUDEAPPACTIVATED:
+                ShowForegroundLayout();
+                break;
         }
-        var hIcon = bmp.GetHicon();
-        var old = Icon;
-        Icon = (Icon)Icon.FromHandle(hIcon).Clone();
-        old?.Dispose();
-        Native.DestroyIcon(hIcon);
+    }
+
+    // One-shot, not polling: restarted by each layout event, stopped by its own tick.
+    void ShowForegroundLayoutAfterSettleDelay()
+    {
+        layoutSettleTimer.Stop();
+        layoutSettleTimer.Start();
+    }
+
+    void ShowForegroundLayout() => ShowLayout(GetForegroundLayout());
+
+    // Returns a null layout when no window is in the foreground, e.g. during a focus change:
+    // GetKeyboardLayout(0) would report this app's own layout instead.
+    static HKL GetForegroundLayout()
+    {
+        const uint NoThread = 0;
+
+        var foregroundThread = GetWindowThreadProcessId(GetForegroundWindow());
+        return foregroundThread == NoThread ? default : GetKeyboardLayout(foregroundThread);
+    }
+
+    void ShowLayout(HKL keyboardLayout)
+    {
+        if (keyboardLayout.IsNull) return;
+
+        var layoutCode = GetLayoutCode(keyboardLayout);
+        if (layoutCode == shownLayoutCode) return;
+
+        shownLayoutCode = layoutCode;
+        Text = layoutCode;
+        ReplaceIcon(layoutCode);
+    }
+
+    static string GetLayoutCode(HKL keyboardLayout)
+    {
+        const int LanguageIdMask = 0xFFFF; // the low word of an HKL is the language ID
+        const string UnknownLayoutCode = "??";
+
+        var languageId = (int)((IntPtr)keyboardLayout & LanguageIdMask);
+        try { return new CultureInfo(languageId).TwoLetterISOLanguageName.ToUpperInvariant(); }
+        catch (CultureNotFoundException) { return UnknownLayoutCode; }
+    }
+
+    void ReplaceIcon(string layoutCode)
+    {
+        using var bitmap = DrawIconBitmap(layoutCode);
+        var iconHandle = bitmap.GetHicon();
+        var newLayoutIcon = (Icon)Icon.FromHandle(iconHandle).Clone();
+        Icon = newLayoutIcon;
+        layoutIcon?.Dispose(); // only icons we created: the initial Icon belongs to WinForms
+        layoutIcon = newLayoutIcon;
+        DestroyIcon((HICON)iconHandle);
+    }
+
+    static Bitmap DrawIconBitmap(string layoutCode)
+    {
+        const int IconSizePx = 32;
+
+        var bitmap = new Bitmap(IconSizePx, IconSizePx);
+        using var graphics = Graphics.FromImage(bitmap);
+        using var font = CreateIconFont();
+        using var centered = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+
+        graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+        graphics.Clear(GetIconColor(layoutCode));
+        graphics.DrawString(layoutCode, font, Brushes.White, new RectangleF(0, 0, IconSizePx, IconSizePx), centered);
+        return bitmap;
+    }
+
+    // Colors are compiled in from the IconColor.* items in whichswitch.csproj.
+    static Color GetIconColor(string layoutCode)
+    {
+        const string DefaultColorKey = "Default";
+
+        var colorValue = FindIconColorValue(layoutCode) ?? FindIconColorValue(DefaultColorKey)
+            ?? throw new InvalidOperationException("whichswitch.csproj has no IconColor.Default item.");
+        return ColorTranslator.FromHtml(colorValue);
+    }
+
+    static string? FindIconColorValue(string colorKey)
+    {
+        const string MetadataKeyPrefix = "IconColor.";
+
+        foreach (var metadata in typeof(MainForm).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>())
+            if (metadata.Key == MetadataKeyPrefix + colorKey)
+                return metadata.Value;
+        return null;
+    }
+
+    // The Windows shell font, as the closest match to the taskbar's language indicator.
+    // GDI+ silently substitutes a missing font, so compare the resolved name to detect
+    // that the Windows 11 font is absent.
+    static Font CreateIconFont()
+    {
+        const string Windows11ShellFontName = "Segoe UI Variable Small";
+        const string Windows10ShellFontName = "Segoe UI";
+
+        var font = CreateIconFont(Windows11ShellFontName);
+        if (font.Name == Windows11ShellFontName) return font;
+
+        font.Dispose();
+        return CreateIconFont(Windows10ShellFontName);
+    }
+
+    static Font CreateIconFont(string fontName)
+    {
+        const int FontSizePx = 15;
+        return new Font(fontName, FontSizePx, FontStyle.Regular, GraphicsUnit.Pixel);
     }
 }
 
